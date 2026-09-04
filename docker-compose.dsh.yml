@@ -1,0 +1,44 @@
+services:
+  dsh:
+    build:
+      context: ./docker
+      dockerfile: Dockerfile.dsh
+      args:
+        # apt-cacher-ng on the host, reached via the host-gateway alias
+        # added below. Leave unset (remove the line) to skip the cache.
+        APT_PROXY: http://host.docker.internal:3142
+      extra_hosts:
+        - "host.docker.internal:host-gateway"
+    image: dsh-sandbox:ollama
+    container_name: dsh-sandbox
+    # dsh's web server intentionally refuses to bind 0.0.0.0 (it would
+    # expose remote code execution to the network) and defaults to
+    # 127.0.0.1. Host networking makes that loopback bind the same
+    # loopback you already browse on this machine, so http://localhost:3080
+    # just works without any port-publish workaround.
+    network_mode: host
+    stdin_open: true
+    tty: true
+    working_dir: /workspace
+    environment:
+      # Placeholder only: Ollama ignores it. Referenced by settings.yaml's
+      # `apiKeyEnv: OLLAMA_API_KEY` for the ollama provider route.
+      OLLAMA_API_KEY: ollama
+    volumes:
+      - .:/workspace
+      - ./docker/dsh-agent-home:/home/node/.dsh
+      # Host SSH keys/config for ssh, scp, rsync, and git-over-ssh to remote
+      # machines. Mounted read-write (not :ro) so ssh can append new host
+      # keys to known_hosts. Uid/gid 1000 in the container matches a
+      # typical host user, so no chown is needed.
+      - ~/.ssh:/home/node/.ssh
+    # `--no-open` because there's no browser inside the container; browse
+    # to http://localhost:3080 from the host yourself, or
+    # https://ubuntu.tailae59.ts.net:8443/ via the nginx proxy at
+    # ~/Documents/webtop_setups (configs/nginx/dsh-web.conf). The
+    # --trusted-host must match that proxy's external host:port exactly --
+    # dsh's Host-based trust fence (packages/client/connection/src/
+    # api-request-trust.ts) refuses any authority not loopback or listed
+    # here. Override on the CLI, e.g.
+    # `docker compose -f docker-compose.dsh.yml run --rm dsh web --no-open --port 8080`
+    command: ["web", "--no-open", "--trusted-host", "ubuntu.tailae59.ts.net:8443"]

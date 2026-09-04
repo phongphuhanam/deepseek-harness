@@ -1,0 +1,34 @@
+# Plain Docker sandbox for DeepSeek Harness (dsh), pointed at a remote
+# Ollama instance instead of a hosted provider. Mirrors the equivalent
+# setup in the pi-mono repo's docker/Dockerfile.pi.
+FROM node:24-bookworm-slim
+
+# Slow layer first: Node's own bundled CA store handles the HTTPS registry
+# fetch, so this doesn't need ca-certificates installed yet. Keeping it
+# ahead of apt-get means adding/removing apt packages below (for dev tools
+# you need mid-project) won't bust this cache and force a slow reinstall.
+RUN npm install -g --ignore-scripts @deepseek-ai/dsh
+
+# Optional apt-get cache (e.g. apt-cacher-ng running on the Docker host at
+# port 3142). Pass --build-arg APT_PROXY=http://host.docker.internal:3142
+# to use it; omit to fetch packages directly.
+ARG APT_PROXY
+RUN if [ -n "$APT_PROXY" ]; then \
+      printf 'Acquire::http::Proxy "%s";\n' "$APT_PROXY" > /etc/apt/apt.conf.d/01proxy; \
+    fi
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+       bash ca-certificates git ripgrep curl \
+       openssh-client rsync rclone \
+  && rm -rf /var/lib/apt/lists/* \
+  && rm -f /etc/apt/apt.conf.d/01proxy
+
+# Run as the non-root "node" user baked into this image (uid/gid 1000),
+# matching a typical host user so bind-mounted files don't need chowning.
+RUN mkdir -p /workspace && chown node:node /workspace
+USER node
+
+WORKDIR /workspace
+ENTRYPOINT ["dsh"]
+CMD ["web", "--no-open"]
