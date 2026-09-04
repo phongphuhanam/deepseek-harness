@@ -57,6 +57,14 @@ export interface Config {
   trustedHosts: string[]
   /** `--base-path`, empty when this invocation did not name one (served at the root). */
   basePath: string
+  /**
+   * `--public-url`, absent when this invocation did not name one. Printed as
+   * an additional authenticated link: the primary line always names the
+   * loopback address, which is unreachable from anywhere but the server
+   * itself once traffic is reverse-proxied, so this is what an operator
+   * actually opens from another device.
+   */
+  publicUrl?: string
 }
 
 export const Config: z<Config> = z.object({
@@ -65,6 +73,7 @@ export const Config: z<Config> = z.object({
   surfaceContext: z.boolean().default(true),
   trustedHosts: z.array(String).default([]),
   basePath: z.string().default(''),
+  publicUrl: z.string(),
 })
 
 /** Bind-dependent Web values shared by the trust fence and URL display. */
@@ -278,9 +287,20 @@ export function apply(ctx: Context, config: Config): void {
         const lanUrl = lanCandidate === undefined
           ? undefined
           : connectionCtx.connection.authenticatedUrl(`http://${lanCandidate}:${String(port)}`)
+        // The loopback (and LAN) links above are unreachable once traffic is
+        // reverse-proxied; --public-url names the address another device
+        // (a phone, say) can actually open.
+        const publicUrl = config.publicUrl === undefined
+          ? undefined
+          : connectionCtx.connection.authenticatedUrl(config.publicUrl)
         ANNOUNCED_ROOTS.add(connectionCtx.root)
         if (config.printUrl) {
-          console.log(`dsh web: ${authenticatedUrl}${lanUrl === undefined ? '' : ` (LAN: ${lanUrl})`}`)
+          const suffixes = [
+            lanUrl === undefined ? undefined : `LAN: ${lanUrl}`,
+            publicUrl === undefined ? undefined : `public: ${publicUrl}`,
+          ].filter((suffix): suffix is string => suffix !== undefined)
+          const suffix = suffixes.length === 0 ? '' : ` (${suffixes.join(', ')})`
+          console.log(`dsh web: ${authenticatedUrl}${suffix}`)
         }
         if (handoffBrowser) {
           console.log('dsh web: opening the default browser; pass --no-open to disable')

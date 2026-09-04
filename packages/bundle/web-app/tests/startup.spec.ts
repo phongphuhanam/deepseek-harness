@@ -160,4 +160,22 @@ describe('web command-line provider', () => {
     expect(observed.readerConfig).toBeUndefined()
     expect(observed.exits).toEqual([1])
   })
+
+  it('publishes a well-formed --public-url', async () => {
+    const { values, observed } = await bootProvider(['--public-url', 'https://example.com/dsh-web'])
+    expect(values).toEqual({ openBrowser: true, trustedHosts: [], publicUrl: 'https://example.com/dsh-web' })
+    expect(observed.exits).toEqual([])
+  })
+
+  it.each([
+    'not a url',
+    'example.com/dsh-web',
+    'ftp://example.com/dsh-web',
+  ])('rejects a malformed --public-url %j before the consumer activates', async (publicUrl) => {
+    const { values, observed } = await bootProvider(['--public-url', publicUrl])
+    expect(observed.out).toContain('--public-url must be an absolute http(s) URL')
+    expect(values).toBeUndefined()
+    expect(observed.readerConfig).toBeUndefined()
+    expect(observed.exits).toEqual([1])
+  })
 })

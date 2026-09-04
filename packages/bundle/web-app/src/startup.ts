@@ -1,7 +1,7 @@
 /**
  * The web app's command-line provider: it parses the `dsh --profile web` flag
- * family (`--host`, `--port`, `--trusted-host`, `--base-path`, `--no-open`)
- * and its `--help` text, then provides the immutable values as
+ * family (`--host`, `--port`, `--trusted-host`, `--base-path`, `--public-url`,
+ * `--no-open`) and its `--help` text, then provides the immutable values as
  * {@link WEB_STARTUP_SERVICE}. Ordinary rows inject that service before
  * reading it from lazy config.
  * @module @deepseek-ai/dsh-web-app/startup
@@ -32,6 +32,15 @@ export interface WebStartupValues {
   trustedHosts: string[]
   /** `--base-path`, absent when the invocation did not name one (served at the root). */
   basePath?: string
+  /**
+   * `--public-url`, absent when the invocation did not name one. Printed as
+   * an additional authenticated link alongside the loopback one -- for a
+   * reverse-proxied deployment, the loopback link is unreachable from
+   * anywhere but the server itself, so this is what a phone or another
+   * device actually opens. Does not affect the /api trust fence; pair it
+   * with a matching `--trusted-host` entry for that.
+   */
+  publicUrl?: string
 }
 
 /** The web flag family, as commander parsed it. */
@@ -40,11 +49,21 @@ interface WebOptions {
   host?: string
   open: boolean
   port?: string
+  publicUrl?: string
   trustedHost?: string[]
 }
 
 /** `--base-path` must be a `/segment[/segment...]` path with no trailing slash. */
 const BASE_PATH_PATTERN = /^\/[^\s/]+(?:\/[^\s/]+)*$/u
+
+/** Whether a string parses as an absolute http/https URL. */
+function isHttpUrl(value: string): boolean {
+  try {
+    return ['http:', 'https:'].includes(new URL(value).protocol)
+  } catch {
+    return false
+  }
+}
 
 /**
  * This app's command: its flags, its description, and its help text.
@@ -60,13 +79,14 @@ function webCommand(): Command {
     .option('--port <port>', 'listen port; pass 0 to let the OS pick a free one')
     .option('--trusted-host <authority...>', 'extra authority the /api browser-trust fence accepts (host or host:port; repeatable)')
     .option('--base-path <path>', 'URL prefix this server is reverse-proxied under, e.g. /dsh-web (no trailing slash)')
+    .option('--public-url <url>', 'external URL to print an additional authenticated link for, e.g. https://example.com/dsh-web')
     .addHelpText('after', `
 Examples:
   dsh --profile web                          serve on the composed host and port
   dsh --profile web --no-open                serve without opening a browser
   dsh --profile web --port 8080              serve on another port
-  dsh --profile web --base-path /dsh-web --trusted-host example.com
-                                              serve under a reverse-proxy subfolder
+  dsh --profile web --base-path /dsh-web --trusted-host example.com --public-url https://example.com/dsh-web
+                                              serve under a reverse-proxy subfolder and print a usable external link
 `)
 }
 
@@ -90,12 +110,16 @@ export function apply(ctx: Context): void {
     if (options.basePath !== undefined && !BASE_PATH_PATTERN.test(options.basePath)) {
       program.error(`error: --base-path must be a "/segment[/segment...]" path with no trailing slash, got ${JSON.stringify(options.basePath)}`)
     }
+    if (options.publicUrl !== undefined && !isHttpUrl(options.publicUrl)) {
+      program.error(`error: --public-url must be an absolute http(s) URL, got ${JSON.stringify(options.publicUrl)}`)
+    }
     ctx.provide(WEB_STARTUP_SERVICE, {
       openBrowser: options.open,
       ...options.host !== undefined && { host: options.host },
       ...options.port !== undefined && { port: Number(options.port) },
       trustedHosts: options.trustedHost ?? [],
       ...options.basePath !== undefined && { basePath: options.basePath },
+      ...options.publicUrl !== undefined && { publicUrl: options.publicUrl },
     } satisfies WebStartupValues)
   })
   parseCmdline(ctx, program)

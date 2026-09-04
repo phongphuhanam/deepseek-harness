@@ -216,6 +216,27 @@ describe('web-app runtime glue', () => {
     await ctx.fiber.dispose()
   })
 
+  it('appends a public: link when --public-url is configured, alongside any LAN link', async () => {
+    stageDist()
+    const ctx = new Context()
+    ctx.provide('webServer', fakeHttpServer().server)
+    provideConnection(ctx)
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    apply(ctx, new Config({
+      openBrowser: false,
+      printUrl: true,
+      surfaceContext: true,
+      trustedHosts: [],
+      basePath: '',
+      publicUrl: 'https://example.com/dsh',
+    }))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(log).toHaveBeenCalledWith(
+      'dsh web: http://127.0.0.1:4567/?token=test-token (public: https://example.com/?token=test-token)',
+    )
+    await ctx.fiber.dispose()
+  })
+
   it('does not publish readiness again when Connection reloads', async () => {
     stageDist()
     const ctx = new Context()
