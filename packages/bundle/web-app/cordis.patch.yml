@@ -119,6 +119,7 @@
       config:
         host: !!js ctx.webStartup.host ?? '127.0.0.1'
         port: !!js ctx.webStartup.port ?? 3080
+        basePath: !!js ctx.webStartup.basePath ?? ''
         compression: gzip
         compressionLevel: 1
         compressionThresholdBytes: 1024
@@ -140,6 +141,7 @@
         printUrl: true
         surfaceContext: true
         trustedHosts: !!js ctx.webStartup.trustedHosts
+        basePath: !!js ctx.webStartup.basePath ?? ''
 
     # The client-plugin reload chain, always mounted: it is idle until a
     # rebuild watcher (pnpm run dev:web) actually rewrites client bundles. It
@@ -161,12 +163,13 @@
     # webserver under /api; browser half is the fetch/SSE client.
     - id: connection
       name: '@deepseek-ai/dsh-client-connection'
-      inject: [webRuntime]
+      inject: [webRuntime, webStartup]
       config:
         # LAN literals derived from the active bind plus --trusted-host extras.
         # A deployment adding authorities keeps this expression and concatenates
         # its literals, for example: ['app.internal', ...ctx.webRuntime.trustedHosts].
         trustedHosts: !!js ctx.webRuntime.trustedHosts
+        basePath: !!js ctx.webStartup.basePath ?? ''
 
     - id: api-remotes
       name: '@deepseek-ai/dsh-api-remotes'

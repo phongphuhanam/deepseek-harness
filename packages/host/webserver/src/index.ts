@@ -61,6 +61,15 @@ export interface Config {
   host: '127.0.0.1' | '0.0.0.0'
   /** Listen port; zero requests an OS-assigned port. */
   port: number
+  /**
+   * URL prefix this server is reverse-proxied under, with no trailing slash
+   * (e.g. `/dsh-web`). A request outside the prefix is refused with 404; a
+   * request inside it is dispatched with the prefix stripped from `req.url`
+   * in place, so route handlers, the fallback owner, and upgrade handlers
+   * all see an unprefixed path without needing basePath awareness of their
+   * own. @default '' (served at the root)
+   */
+  basePath?: string
   /** Response compression for socket-backed HTTP requests. @default 'none' */
   compression?: 'none' | 'gzip'
   /** Gzip DEFLATE level from 0 through 9. @default 1 */
@@ -69,14 +78,29 @@ export interface Config {
   compressionThresholdBytes?: number
 }
 
+const DEFAULT_BASE_PATH = ''
 const DEFAULT_COMPRESSION = 'none' as const
 const DEFAULT_COMPRESSION_LEVEL = 1
 const DEFAULT_COMPRESSION_THRESHOLD_BYTES = 1024
 
 interface ResolvedConfig extends Config {
+  basePath: string
   compression: 'none' | 'gzip'
   compressionLevel: number
   compressionThresholdBytes: number
+}
+
+/**
+ * Fail loudly on a malformed `basePath`: anything but empty (root) or a
+ * `/segment[/segment...]` path with no trailing slash is a misconfiguration a
+ * deployment would otherwise discover only as a mysterious 404 loop.
+ * @param basePath - the configured value, verbatim.
+ */
+function assertBasePath(basePath: string): void {
+  if (basePath === '') return
+  if (!basePath.startsWith('/') || basePath.endsWith('/') || basePath.includes('//') || /\s/.test(basePath)) {
+    throw new Error(`webserver: basePath ${JSON.stringify(basePath)} must be empty or a "/segment[/segment...]" path with no trailing slash`)
+  }
 }
 
 type NodeMiddleware = (
@@ -125,6 +149,7 @@ export class WebServer extends Service {
   static Config: z<Config> = z.object({
     host: z.union([z.const('127.0.0.1'), z.const('0.0.0.0')]).required(),
     port: z.natural().max(65535).required(),
+    basePath: z.string().default(DEFAULT_BASE_PATH),
     compression: z.union([z.const('none'), z.const('gzip')]).default(DEFAULT_COMPRESSION),
     compressionLevel: z.number().step(1).min(0).max(9).default(DEFAULT_COMPRESSION_LEVEL),
     compressionThresholdBytes: z.natural().default(DEFAULT_COMPRESSION_THRESHOLD_BYTES),
@@ -139,10 +164,13 @@ export class WebServer extends Service {
   private server!: Server
   private listenedPort!: number
   private readonly gzip: NodeMiddleware | undefined
+  private readonly basePath: string
 
   constructor(ctx: Context, private config: Config) {
     super(ctx, 'webServer')
     const resolved = config as ResolvedConfig
+    assertBasePath(resolved.basePath)
+    this.basePath = resolved.basePath
     this.gzip = resolved.compression === 'gzip' ? createGzipMiddleware(resolved) : undefined
   }
 
@@ -219,10 +247,13 @@ export class WebServer extends Service {
   /** Listen; resolves once the socket is bound (rejection = FAILED fiber). */
   async [Service.init](): Promise<void> {
     const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-      /* v8 ignore next -- `?? '/'` arm: node:http always sets url on server
-      requests; the field is only optional on the client-side IncomingMessage type */
-      const rawPath = new URL(req.url ?? '/', 'http://x').pathname
-      const route = this.match(rawPath)
+      const pathname = this.resolveDispatchPath(req)
+      if (pathname === undefined) {
+        res.writeHead(404)
+        res.end()
+        return
+      }
+      const route = this.match(pathname)
       if (route !== undefined) {
         await route.handler(req, res)
         return
@@ -266,8 +297,8 @@ export class WebServer extends Service {
       })
       let route: WebUpgradeRoute | undefined
       try {
-        /* v8 ignore next -- node:http always sets url on server requests. */
-        route = this.upgrades.get(new URL(req.url ?? '/', 'http://x').pathname)
+        const pathname = this.resolveDispatchPath(req)
+        route = pathname === undefined ? undefined : this.upgrades.get(pathname)
       } catch (error) {
         this.ctx.logger.warn(error instanceof Error ? error : new Error(String(error)))
         socket.destroy()
@@ -312,6 +343,28 @@ export class WebServer extends Service {
       }))
       await Promise.all([serverClosed, ...upgradedClosed])
     }, 'webServer.listen')
+  }
+
+  /**
+   * Resolve the pathname to dispatch on for one request, stripping a
+   * configured `basePath` prefix and rewriting `req.url` in place so every
+   * downstream consumer that re-derives pathname from `req.url` (route
+   * handlers, the fallback owner, upgrade handlers) sees an unprefixed path
+   * without any basePath awareness of its own.
+   * @param req - the incoming request or upgrade request.
+   * @returns the unprefixed pathname, or undefined for a request outside
+   * the configured mount point (basePath unset matches everything).
+   */
+  private resolveDispatchPath(req: IncomingMessage): string | undefined {
+    /* v8 ignore next -- `?? '/'` arm: node:http always sets url on server
+    requests; the field is only optional on the client-side IncomingMessage type */
+    const parsed = new URL(req.url ?? '/', 'http://x')
+    if (this.basePath === '') return parsed.pathname
+    const stripped = parsed.pathname === this.basePath
+      ? '/'
+      : parsed.pathname.startsWith(`${this.basePath}/`) ? parsed.pathname.slice(this.basePath.length) : undefined
+    if (stripped !== undefined) req.url = stripped + parsed.search
+    return stripped
   }
 
   /** Longest-prefix-wins over the prefix table after an exact-table miss. */

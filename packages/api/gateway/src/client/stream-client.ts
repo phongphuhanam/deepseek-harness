@@ -302,6 +302,18 @@ class StreamInbox {
 }
 
 function remoteStreamUrl(): string {
+  // A real document resolves the mux path against its own <base href>,
+  // which the served index sets to the deployment's basePath (empty at the
+  // root) — so this stays correct under a reverse-proxy subfolder mount
+  // without this module needing any basePath awareness of its own. A worker
+  // or other non-document host has no <base> tag to respect, so it falls
+  // back to resolving the absolute path against location.origin.
+  const baseURI = (globalThis as { document?: { baseURI?: string } }).document?.baseURI
+  if (baseURI !== undefined) {
+    const url = new URL(REMOTE_STREAM_MUX_PATH.replace(/^\//u, ''), baseURI)
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+    return url.href
+  }
   const location = (globalThis as { location?: { origin?: string } }).location
   const base = location?.origin !== undefined && location.origin !== 'null' ? location.origin : INTERNAL_BASE
   const url = new URL(REMOTE_STREAM_MUX_PATH, base)

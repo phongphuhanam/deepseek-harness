@@ -185,11 +185,14 @@ async function initializeSecret(credentials: CredentialProvider): Promise<Buffer
 export class BrowserAuth {
   private readonly launchToken: string
   private readonly maxAgeMilliseconds: number
+  /** The webserver's own `basePath` plus `/`; requests reach this class already stripped of it. */
+  private readonly indexPath: string
 
   private constructor(
     processOwner: object,
     private readonly secret: Buffer,
     maxAgeDays: number,
+    basePath: string,
   ) {
     this.launchToken = processLaunchToken(processOwner)
     this.maxAgeMilliseconds = maxAgeDays * DAY_MILLISECONDS
@@ -197,6 +200,7 @@ export class BrowserAuth {
       || !Number.isSafeInteger(Date.now() + this.maxAgeMilliseconds)) {
       throw new Error('client-connection: cookieMaxAgeDays exceeds the safe timestamp range')
     }
+    this.indexPath = `${basePath}/`
   }
 
   /**
@@ -205,14 +209,19 @@ export class BrowserAuth {
    * @param processOwner - root application context retaining one token across Connection reloads.
    * @param credentials - persistent credential provider for the Web profile.
    * @param maxAgeDays - positive absolute browser-cookie lifetime in days.
+   * @param basePath - the webserver's own `basePath` (no trailing slash, empty at the root). The
+   * webserver strips this prefix from `req.url` before any request reaches this class, so it is
+   * needed only for the browser-facing values this class writes back out: the printed/authenticated
+   * URL and the post-token-exchange redirect target, both of which must carry the real external path.
    * @returns initialized authentication owner with the process owner's launch token.
    */
   static async create(
     processOwner: object,
     credentials: CredentialProvider,
     maxAgeDays: number,
+    basePath: string,
   ): Promise<BrowserAuth> {
-    return new BrowserAuth(processOwner, await initializeSecret(credentials), maxAgeDays)
+    return new BrowserAuth(processOwner, await initializeSecret(credentials), maxAgeDays, basePath)
   }
 
   /**
@@ -222,7 +231,7 @@ export class BrowserAuth {
    */
   authenticatedUrl(baseUrl: string): string {
     const url = new URL(baseUrl)
-    url.pathname = '/'
+    url.pathname = this.indexPath
     url.search = ''
     url.hash = ''
     url.searchParams.set(TOKEN_QUERY, this.launchToken)
@@ -231,8 +240,11 @@ export class BrowserAuth {
 
   /**
    * Authenticate an index request. A valid root query token mints the cookie
-   * and redirects to clean `/`; a valid cookie lets the caller serve the
-   * index; every other request receives the same minimal 401 response.
+   * and redirects to the clean index path; a valid cookie lets the caller
+   * serve the index; every other request receives the same minimal 401
+   * response. The request's pathname arrives already stripped of the
+   * webserver's `basePath`, so it is compared against `/` here regardless of
+   * the deployment's external mount point.
    * @param req - incoming root or configured-index request.
    * @param res - response owned when this method returns false.
    * @returns true only when the caller may serve index.html.
@@ -255,7 +267,7 @@ export class BrowserAuth {
         }, this.secret)
         res.writeHead(303, {
           'cache-control': 'no-store',
-          'location': '/',
+          'location': this.indexPath,
           'referrer-policy': 'no-referrer',
           'set-cookie': sessionCookie(
             cookieName(authority), value, expiresAt, Math.floor(this.maxAgeMilliseconds / 1000),
@@ -267,7 +279,7 @@ export class BrowserAuth {
       if (req.method === 'GET' && url.pathname === '/' && this.isAuthenticated(req)) {
         res.writeHead(303, {
           'cache-control': 'no-store',
-          'location': '/',
+          'location': this.indexPath,
           'referrer-policy': 'no-referrer',
         })
         res.end()

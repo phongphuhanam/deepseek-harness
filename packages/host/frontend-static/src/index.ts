@@ -30,10 +30,19 @@ export const inject = ['webServer', 'connection']
 export interface Config {
   /** Absolute path of index.html inside the dist root. */
   distIndex: string
+  /**
+   * URL prefix this server is reverse-proxied under, matching the
+   * webserver's own `basePath` (no trailing slash, empty at the root). Sets
+   * the served index's `<base href>` so relative asset URLs resolve under
+   * the deployment's real mount point instead of the site root.
+   * @default '' (served at the root)
+   */
+  basePath?: string
 }
 
 export const Config: z<Config> = z.object({
   distIndex: z.string().required(),
+  basePath: z.string().default(''),
 })
 
 const HTML_MIME = 'text/html; charset=utf-8'
@@ -113,13 +122,15 @@ export async function serveStatic(
 export function apply(ctx: Context, config: Config): void {
   const distIndex = config.distIndex
   const distRoot = dirname(distIndex)
+  const basePath = config.basePath ?? ''
   // The dist is built with a relative base so the same files mount under any
   // static directory; served pages also answer deep SPA-fallback paths, where
   // relative asset URLs would resolve under the request directory, so the
-  // served form anchors them at the site root ahead of every URL-bearing tag.
+  // served form anchors them at the deployment's real mount point (the site
+  // root, or a configured basePath) ahead of every URL-bearing tag.
   const renderIndex = async (): Promise<string> => {
     const body = ctx.webServer.renderIndex(await readFile(distIndex, 'utf8'))
-    return body.replace(/<head(?:\s[^>]*)?>/i, open => `${open}<base href="/">`)
+    return body.replace(/<head(?:\s[^>]*)?>/i, open => `${open}<base href="${basePath}/">`)
   }
   ctx.effect(() => ctx.webServer.registerFallback(async (req, res) => {
     // Non-GET/HEAD without a matching named route is 405 (fallback-only

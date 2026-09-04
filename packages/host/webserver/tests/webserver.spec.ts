@@ -28,7 +28,7 @@ afterEach(async () => {
 })
 
 /** Write a cordis.yml with one webserver row, then boot it through the real Loader. */
-async function loadComposition(port = 0, gzip = false): Promise<Context> {
+async function loadComposition(port = 0, gzip = false, basePath = ''): Promise<Context> {
   root = await mkdtemp(join(tmpdir(), 'dsh-webserver-loader-'))
   const configPath = join(root, 'cordis.yml')
   await writeFile(configPath, [
@@ -36,6 +36,7 @@ async function loadComposition(port = 0, gzip = false): Promise<Context> {
     '  config:',
     "    host: '127.0.0.1'",
     `    port: ${String(port)}`,
+    `    basePath: ${JSON.stringify(basePath)}`,
     ...(gzip
       ? [
         '    compression: gzip',
@@ -101,6 +102,7 @@ describe('real Loader composition', () => {
     expect(HttpServer.Config({ host: '127.0.0.1', port: 0 })).toEqual({
       host: '127.0.0.1',
       port: 0,
+      basePath: '',
       compression: 'none',
       compressionLevel: 1,
       compressionThresholdBytes: 1024,
@@ -353,6 +355,102 @@ describe('real Loader composition', () => {
       { kind: 'script', placement: 'body', text: 'B' },
     ])).toBe('<script>H</script><main>x</main><script>B</script>'
       + '<script>(globalThis.__DSH_BOOT_READY__ ??= Promise.withResolvers()).resolve()</script>')
+  })
+
+  it('rejects a malformed basePath at construction (fail-loud, not a mysterious 404 loop)', { timeout: 60_000 }, async () => {
+    for (const malformed of ['dsh-web', '/dsh-web/', '/dsh-web//sub', '/dsh web']) {
+      let failure: unknown
+      try {
+        await loadComposition(0, false, malformed)
+      } catch (error) {
+        failure = error
+      } finally {
+        await context?.fiber.dispose()
+        context = undefined
+        if (root !== undefined) await rm(root, { recursive: true, force: true })
+        root = undefined
+      }
+      expect(String(failure)).toMatch(/failed to apply loader entry.*basePath/)
+    }
+  })
+
+  it('strips a configured basePath before dispatch and refuses requests outside it', { timeout: 60_000 }, async () => {
+    const loaded = await loadComposition(0, false, '/dsh-web')
+    const server = loaded.webServer
+    const port = server.port
+
+    // The prefix is stripped from req.url before the handler runs, so a
+    // route registered at the unprefixed path sees a plain '/probe' — every
+    // downstream consumer (route handlers, the fallback owner, upgrade
+    // handlers) gets this for free without any basePath awareness of its own.
+    server.register({
+      kind: 'exact',
+      path: '/probe',
+      handler: (req, res) => { res.writeHead(200); res.end(req.url ?? '') },
+    })
+    server.register({
+      kind: 'prefix',
+      path: '/api',
+      handler: (req, res) => { res.writeHead(200); res.end(req.url ?? '') },
+    })
+    const releaseFallback = server.registerFallback((req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' })
+      res.end(`fallback:${req.url ?? ''}`)
+    })
+
+    // Inside the mount point: the prefix is gone from req.url by the time any
+    // handler sees it, query string preserved.
+    expect(await request(port, '/dsh-web/probe')).toMatchObject({ status: 200, body: '/probe' })
+    expect(await request(port, '/dsh-web/api/deep?x=1')).toMatchObject({ status: 200, body: '/api/deep?x=1' })
+    // Exact match on the basePath itself (no trailing slash) is the mount's root.
+    expect(await request(port, '/dsh-web')).toMatchObject({ status: 200, body: 'fallback:/' })
+    expect(await request(port, '/dsh-web/anything/else')).toMatchObject({ status: 200, body: 'fallback:/anything/else' })
+
+    // Outside the mount point: refused before any route or fallback ever
+    // sees the request, regardless of whether a route would otherwise match.
+    expect((await request(port, '/probe')).status).toBe(404)
+    expect((await request(port, '/dsh-web-extra/probe')).status).toBe(404)
+    expect((await request(port, '/')).status).toBe(404)
+
+    // Upgrade routes respect the same prefix and stripping.
+    releaseFallback()
+    server.registerUpgrade({
+      path: '/events',
+      handler: (req, socket) => {
+        socket.write(`HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: dsh-test\r\nX-Req-Url: ${req.url ?? ''}\r\n\r\n`)
+      },
+    })
+    const insideSocket = connect(port, '127.0.0.1')
+    await once(insideSocket, 'connect')
+    const insideResponse = once(insideSocket, 'data')
+    insideSocket.write([
+      'GET /dsh-web/events?stream=mux HTTP/1.1',
+      `Host: 127.0.0.1:${String(port)}`,
+      'Connection: Upgrade',
+      'Upgrade: dsh-test',
+      '',
+      '',
+    ].join('\r\n'))
+    const [insideData] = await insideResponse as [Buffer]
+    expect(String(insideData)).toContain('101 Switching Protocols')
+    // req.url arrives stripped of the basePath, query string intact.
+    expect(String(insideData)).toContain('X-Req-Url: /events?stream=mux')
+    insideSocket.destroy()
+
+    const outsideSocket = connect(port, '127.0.0.1')
+    await once(outsideSocket, 'connect')
+    const outsideClosed = once(outsideSocket, 'close')
+    outsideSocket.write([
+      'GET /events HTTP/1.1',
+      `Host: 127.0.0.1:${String(port)}`,
+      'Connection: Upgrade',
+      'Upgrade: dsh-test',
+      '',
+      '',
+    ].join('\r\n'))
+    await outsideClosed
+
+    await loaded.fiber.dispose()
   })
 
   it('fails the fiber when the port is already taken (fail-loud at activation)', { timeout: 60_000 }, async () => {
