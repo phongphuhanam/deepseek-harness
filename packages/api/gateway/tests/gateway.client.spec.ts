@@ -604,6 +604,32 @@ describe('Client Remote transport readiness', () => {
     })
   })
 
+  it('resolves the mux URL against document.baseURI, inheriting a reverse-proxy basePath from the served <base> tag', async () => {
+    await withFakeWebSocket('https://harness.example', async () => {
+      const { client } = await benchFiber(vi.fn<ConnectionHandle['rpc']['call']>(), 'web')
+      try {
+        expect(FakeWebSocket.sockets).toHaveLength(1)
+        // No <base> tag (or no document at all, as in a worker): falls back
+        // to the absolute root path against location.origin.
+        expect(FakeWebSocket.sockets[0]!.url).toBe('wss://harness.example/api/remote.mux')
+      } finally {
+        await client.dispose()
+      }
+    })
+
+    await withFakeWebSocket('https://harness.example', async () => {
+      const { client } = await benchFiber(vi.fn<ConnectionHandle['rpc']['call']>(), 'web')
+      try {
+        expect(FakeWebSocket.sockets).toHaveLength(1)
+        // A real document resolves relative to its own <base href>, which
+        // the served index sets to the deployment's basePath.
+        expect(FakeWebSocket.sockets[0]!.url).toBe('wss://harness.example/dsh-web/api/remote.mux')
+      } finally {
+        await client.dispose()
+      }
+    }, 'https://harness.example/dsh-web/')
+  })
+
   it('does not replace an in-process carrier when Connection retries', async () => {
     const { client, start } = await benchFiber(
       vi.fn<ConnectionHandle['rpc']['call']>(),
@@ -2560,12 +2586,16 @@ describe('Remote stream client carrier lifecycle', () => {
 async function withFakeWebSocket(
   origin: string | undefined,
   run: () => Promise<void>,
+  documentBaseURI?: string,
 ): Promise<void> {
   const originalWebSocket = globalThis.WebSocket
   const locationDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'location')
+  const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'document')
   ;(globalThis as WebSocketGlobal).WebSocket = FakeWebSocket as unknown as typeof WebSocket
   if (origin === undefined) Reflect.deleteProperty(globalThis, 'location')
   else Object.defineProperty(globalThis, 'location', { configurable: true, value: { origin } })
+  if (documentBaseURI === undefined) Reflect.deleteProperty(globalThis, 'document')
+  else Object.defineProperty(globalThis, 'document', { configurable: true, value: { baseURI: documentBaseURI } })
   FakeWebSocket.sockets.length = 0
   FakeWebSocket.autoOpen = true
   FakeWebSocket.dispatchClose = true
@@ -2579,5 +2609,7 @@ async function withFakeWebSocket(
     else globalThis.WebSocket = originalWebSocket
     if (locationDescriptor === undefined) Reflect.deleteProperty(globalThis, 'location')
     else Object.defineProperty(globalThis, 'location', locationDescriptor)
+    if (documentDescriptor === undefined) Reflect.deleteProperty(globalThis, 'document')
+    else Object.defineProperty(globalThis, 'document', documentDescriptor)
   }
 }

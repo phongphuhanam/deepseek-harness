@@ -141,4 +141,23 @@ describe('web command-line provider', () => {
     expect(observed.readerConfig).toBeUndefined()
     expect(observed.exits).toEqual([1])
   })
+
+  it('publishes a well-formed --base-path', async () => {
+    const { values, observed } = await bootProvider(['--base-path', '/dsh-web'])
+    expect(values).toEqual({ openBrowser: true, trustedHosts: [], basePath: '/dsh-web' })
+    expect(observed.exits).toEqual([])
+  })
+
+  it.each([
+    'dsh-web',
+    '/dsh-web/',
+    '/dsh-web//sub',
+    '/dsh web',
+  ])('rejects a malformed --base-path %j before the consumer activates', async (basePath) => {
+    const { values, observed } = await bootProvider(['--base-path', basePath])
+    expect(observed.out).toContain('--base-path must be a "/segment[/segment...]" path with no trailing slash')
+    expect(values).toBeUndefined()
+    expect(observed.readerConfig).toBeUndefined()
+    expect(observed.exits).toEqual([1])
+  })
 })

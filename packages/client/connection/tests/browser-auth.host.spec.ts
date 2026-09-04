@@ -141,6 +141,46 @@ describe('BrowserAuth', () => {
     })
   })
 
+  it('carries a configured basePath in the printed URL and the post-exchange redirect', async () => {
+    const store = new RecordCredentials()
+    const auth = await createAuth(store, 30, {}, '/dsh-web')
+
+    // The printed/authenticated URL is browser-facing: it must name the real
+    // external path, since the webserver's own stripping only applies to
+    // requests it dispatches, not to this string.
+    const launchUrl = auth.authenticatedUrl('http://127.0.0.1:3080')
+    const target = new URL(launchUrl)
+    expect(target.pathname).toBe('/dsh-web/')
+
+    // The incoming request BrowserAuth sees is already stripped of the
+    // basePath by the webserver, so it arrives at '/' regardless of the
+    // configured prefix — authorizeIndex needs no basePath awareness of its
+    // own to recognize it.
+    const res = response()
+    expect(auth.authorizeIndex(request(`/${target.search}`, '127.0.0.1:3080'), res.value)).toBe(false)
+    expect(res.state).toMatchObject({
+      status: 303,
+      headers: {
+        'cache-control': 'no-store',
+        'location': '/dsh-web/',
+        'referrer-policy': 'no-referrer',
+      },
+    })
+    const setCookie = res.state.headers?.['set-cookie']
+    if (setCookie === undefined) throw new Error('token exchange did not set a cookie')
+    const cookie = setCookie.split(';', 1)[0]!
+
+    // A second authenticated visit also redirects to the prefixed index, not
+    // bare '/'.
+    const revisit = response()
+    expect(auth.authorizeIndex(request(`/${target.search}`, '127.0.0.1:3080', { cookie }), revisit.value)).toBe(false)
+    expect(revisit.state).toMatchObject({ status: 303, headers: { location: '/dsh-web/' } })
+
+    // isAuthenticated itself is basePath-agnostic: it only ever sees the
+    // stripped path via the Host header, never the prefix.
+    expect(auth.isAuthenticated(request('/', '127.0.0.1:3080', { cookie }))).toBe(true)
+  })
+
   it('accepts the cookie for index serving and gives every unauthenticated request one response', async () => {
     const auth = await createAuth(new RecordCredentials())
     const { cookie } = exchange(auth)

@@ -30,7 +30,7 @@ afterEach(async () => {
 })
 
 /** Write a dist fixture and the authenticated Web rows, then boot them through the real Loader. */
-async function loadComposition(): Promise<Context> {
+async function loadComposition(basePath = ''): Promise<Context> {
   root = await mkdtemp(join(tmpdir(), 'dsh-frontend-static-'))
   const dist = join(root, 'dist')
   await mkdir(dist)
@@ -50,11 +50,15 @@ async function loadComposition(): Promise<Context> {
     '  config:',
     "    host: '127.0.0.1'",
     '    port: 0',
+    `    basePath: ${JSON.stringify(basePath)}`,
     "- name: '@deepseek-ai/dsh-client-connection'",
+    '  config:',
+    `    basePath: ${JSON.stringify(basePath)}`,
     '- id: frontend',
     "  name: '@deepseek-ai/dsh-host-frontend-static'",
     '  config:',
     `    distIndex: '${distIndex}'`,
+    `    basePath: ${JSON.stringify(basePath)}`,
     '',
   ].join('\n'))
 
@@ -204,5 +208,38 @@ describe('real Loader composition', () => {
     await frontendEntry!.fiber?.dispose()
     expect((await request(port, '/no/such/route')).status).toBe(404)
     expect(() => server.registerFallback(() => {})).not.toThrow()
+  })
+
+  it('serves under a reverse-proxy basePath: <base href> carries the prefix end to end', { timeout: 60_000 }, async () => {
+    const loaded = await loadComposition('/dsh-web')
+    const server = loaded.webServer
+    const port = server.port
+
+    // Requests outside the mount point never reach frontend-static at all —
+    // the webserver refuses them before dispatch.
+    expect((await request(port, '/'))).toMatchObject({ status: 404 })
+    expect((await request(port, '/app.js'))).toMatchObject({ status: 404 })
+
+    // The printed/authenticated URL and the post-exchange redirect both name
+    // the real external path.
+    const launchUrl = loaded.connection.authenticatedUrl(`http://127.0.0.1:${String(port)}`)
+    expect(new URL(launchUrl).pathname).toBe('/dsh-web/')
+    const exchange = await fetch(launchUrl, { redirect: 'manual' })
+    expect(exchange.status).toBe(303)
+    expect(exchange.headers.get('location')).toBe('/dsh-web/')
+    const setCookie = exchange.headers.get('set-cookie')
+    if (setCookie === null) throw new Error('authenticated frontend did not set a cookie')
+    const cookie = setCookie.split(';', 1)[0]!
+
+    // A real asset resolves under the prefix, with the basePath stripped
+    // before frontend-static ever sees the request path.
+    expect(await request(port, '/dsh-web/app.js')).toMatchObject({ status: 200, body: 'export {}' })
+
+    // The served index anchors relative asset URLs at the real mount point,
+    // not the site root.
+    const shell = await request(port, '/dsh-web/', { headers: { cookie } })
+    expect(shell.status).toBe(200)
+    expect(shell.body).toContain('<base href="/dsh-web/">')
+    expect(shell.body).toContain('shell')
   })
 })
