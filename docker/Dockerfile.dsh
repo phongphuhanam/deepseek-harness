@@ -1,13 +1,8 @@
-# Plain Docker sandbox for DeepSeek Harness (dsh), pointed at a remote
-# Ollama instance instead of a hosted provider. Mirrors the equivalent
-# setup in the pi-mono repo's docker/Dockerfile.pi.
+# Docker deployment of DeepSeek Harness (dsh), built FROM SOURCE on the
+# feature/web-base-path branch: the --base-path subfolder-proxy support
+# isn't in the published @deepseek-ai/dsh npm package yet. Pointed at a
+# remote Ollama instance instead of a hosted provider.
 FROM node:24-bookworm-slim
-
-# Slow layer first: Node's own bundled CA store handles the HTTPS registry
-# fetch, so this doesn't need ca-certificates installed yet. Keeping it
-# ahead of apt-get means adding/removing apt packages below (for dev tools
-# you need mid-project) won't bust this cache and force a slow reinstall.
-RUN npm install -g --ignore-scripts @deepseek-ai/dsh
 
 # Optional apt-get cache (e.g. apt-cacher-ng running on the Docker host at
 # port 3142). Pass --build-arg APT_PROXY=http://host.docker.internal:3142
@@ -24,11 +19,26 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/* \
   && rm -f /etc/apt/apt.conf.d/01proxy
 
+RUN corepack enable && corepack prepare pnpm@11.7.0 --activate
+
+# Build the monorepo in /repo (root's own checkout, not the mounted
+# /workspace below -- that stays free for whatever project you point the
+# agent at, same as the pi-mono sandbox).
+WORKDIR /repo
+COPY . .
+RUN git config --global --add safe.directory /repo \
+  && pnpm install --frozen-lockfile \
+  && pnpm run build
+
 # Run as the non-root "node" user baked into this image (uid/gid 1000),
 # matching a typical host user so bind-mounted files don't need chowning.
+# /repo is read-only at runtime (dsh writes to $DSH_HOME, not here), so it
+# stays root-owned -- apt/npm-installed files are world-readable by default,
+# and a recursive chown over the whole node_modules tree is the slowest
+# single step of this build on modest hardware.
 RUN mkdir -p /workspace && chown node:node /workspace
 USER node
 
 WORKDIR /workspace
-ENTRYPOINT ["dsh"]
+ENTRYPOINT ["node", "/repo/apps/cli/lib/bin.js"]
 CMD ["web", "--no-open"]

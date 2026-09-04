@@ -1,8 +1,8 @@
 services:
   dsh:
     build:
-      context: ./docker
-      dockerfile: Dockerfile.dsh
+      context: .
+      dockerfile: docker/Dockerfile.dsh
       args:
         # apt-cacher-ng on the host, reached via the host-gateway alias
         # added below. Leave unset (remove the line) to skip the cache.
@@ -34,11 +34,13 @@ services:
       - ~/.ssh:/home/node/.ssh
     # `--no-open` because there's no browser inside the container; browse
     # to http://localhost:3080 from the host yourself, or
-    # https://ubuntu.tailae59.ts.net:8443/ via the nginx proxy at
-    # ~/Documents/webtop_setups (configs/nginx/dsh-web.conf). The
-    # --trusted-host must match that proxy's external host:port exactly --
-    # dsh's Host-based trust fence (packages/client/connection/src/
-    # api-request-trust.ts) refuses any authority not loopback or listed
-    # here. Override on the CLI, e.g.
+    # https://ubuntu.tailae59.ts.net/dsh/ via the nginx subfolder proxy at
+    # ~/Documents/webtop_setups (configs/nginx/dsh.subfolder.conf).
+    # --base-path must match that proxy's location path, and --trusted-host
+    # must match its external hostname -- dsh's Host-based trust fence
+    # (packages/client/connection/src/api-request-trust.ts) refuses any
+    # authority not loopback or listed here. A port-less --trusted-host
+    # entry matches that hostname on any port, so this works whether nginx
+    # answers on 443 or something else. Override on the CLI, e.g.
     # `docker compose -f docker-compose.dsh.yml run --rm dsh web --no-open --port 8080`
-    command: ["web", "--no-open", "--trusted-host", "ubuntu.tailae59.ts.net:8443"]
+    command: ["web", "--no-open", "--base-path", "/dsh", "--trusted-host", "ubuntu.tailae59.ts.net"]
