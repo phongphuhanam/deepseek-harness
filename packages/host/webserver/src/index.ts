@@ -164,13 +164,13 @@ export class WebServer extends Service {
   private server!: Server
   private listenedPort!: number
   private readonly gzip: NodeMiddleware | undefined
-  private readonly basePath: string
+  private readonly basePath_: string
 
   constructor(ctx: Context, private config: Config) {
     super(ctx, 'webServer')
     const resolved = config as ResolvedConfig
     assertBasePath(resolved.basePath)
-    this.basePath = resolved.basePath
+    this.basePath_ = resolved.basePath
     this.gzip = resolved.compression === 'gzip' ? createGzipMiddleware(resolved) : undefined
   }
 
@@ -182,6 +182,17 @@ export class WebServer extends Service {
   /** The configured bind host (the loopback or all-interfaces literal). */
   get host(): Config['host'] {
     return this.config.host
+  }
+
+  /**
+   * The configured `basePath` (no trailing slash, empty at the root). Every
+   * request this class dispatches has already had it stripped, so this is
+   * for consumers that must embed an absolute, browser-facing URL of their
+   * own -- e.g. a `<script src>` outside the dist's relative-asset
+   * convention -- and therefore need to restate the prefix explicitly.
+   */
+  get basePath(): string {
+    return this.basePath_
   }
 
   /**
@@ -359,10 +370,10 @@ export class WebServer extends Service {
     /* v8 ignore next -- `?? '/'` arm: node:http always sets url on server
     requests; the field is only optional on the client-side IncomingMessage type */
     const parsed = new URL(req.url ?? '/', 'http://x')
-    if (this.basePath === '') return parsed.pathname
-    const stripped = parsed.pathname === this.basePath
+    if (this.basePath_ === '') return parsed.pathname
+    const stripped = parsed.pathname === this.basePath_
       ? '/'
-      : parsed.pathname.startsWith(`${this.basePath}/`) ? parsed.pathname.slice(this.basePath.length) : undefined
+      : parsed.pathname.startsWith(`${this.basePath_}/`) ? parsed.pathname.slice(this.basePath_.length) : undefined
     if (stripped !== undefined) req.url = stripped + parsed.search
     return stripped
   }

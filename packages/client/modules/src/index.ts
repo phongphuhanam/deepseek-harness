@@ -476,6 +476,39 @@ const CLIENT_MODULES_ID = '@deepseek-ai/dsh-client-modules'
 const PARSER_PRELOAD_IDS = [CLIENT_MODULES_ID] as const
 
 /**
+ * Prefix a server-relative URL with the deployment's `basePath`. Every URL
+ * `bootInjections` embeds is root-anchored (`/plugins/...`), which the
+ * served index's `<base href>` tag does not affect -- unlike the dist's own
+ * relative-asset convention, a root-anchored `src`/`href` always resolves
+ * against the true origin, so a reverse-proxied deployment must restate the
+ * prefix explicitly here instead.
+ * @param url - a root-anchored URL as `comboUrl` produces it.
+ * @param basePath - the deployment's `basePath` (no trailing slash, empty at the root).
+ * @returns the URL, prefixed when `basePath` is non-empty.
+ */
+function withBasePath(url: string, basePath: string): string {
+  return basePath === '' ? url : basePath + url
+}
+
+/**
+ * Rewrite every embedded URL in a graph with the deployment's `basePath`,
+ * without mutating the source graph -- callers keep matching incoming
+ * (already basePath-stripped) requests against the unprefixed URLs the
+ * server itself tracks.
+ * @param graph - the composed entry graph, read-only.
+ * @param basePath - the deployment's `basePath` (no trailing slash, empty at the root).
+ * @returns a graph with the same shape and every `url` field prefixed.
+ */
+function prefixGraph(graph: WebBootGraph, basePath: string): WebBootGraph {
+  if (basePath === '') return graph
+  return {
+    ...graph,
+    entries: graph.entries.map(entry => ({ ...entry, url: withBasePath(entry.url, basePath) })),
+    batches: graph.batches.map(batch => ({ ...batch, url: withBasePath(batch.url, basePath) })),
+  }
+}
+
+/**
  * The boot protocol as index injection rows. The inline registration queue
  * precedes the application-batch preload and the blocking bootstrap batch. Its
  * `create()` method materializes the modules
@@ -483,10 +516,12 @@ const PARSER_PRELOAD_IDS = [CLIENT_MODULES_ID] as const
  * in live-registration mode. The graph global follows before the shell reads
  * it.
  * @param graph - the composed entry graph.
+ * @param basePath - the deployment's `basePath` (no trailing slash, empty at
+ * the root). @default '' (served at the root)
  * @returns head rows in execution order: queue script, application preloads,
  * blocking bootstrap scripts, graph global.
  */
-export function bootInjections(graph: WebBootGraph): IndexInjection[] {
+export function bootInjections(graph: WebBootGraph, basePath = ''): IndexInjection[] {
   const bootstrapId = JSON.stringify(CLIENT_MODULES_ID)
   const queue = `(()=>{
 const pendingQueue=[]
@@ -510,8 +545,9 @@ window.__ModuleLoader__={
   }
 }
 })()`
-  const bootstrap = graph.batches.filter(batch => batch.phase === 'bootstrap')
-  const application = graph.batches.filter(batch => batch.phase === 'application')
+  const prefixed = prefixGraph(graph, basePath)
+  const bootstrap = prefixed.batches.filter(batch => batch.phase === 'bootstrap')
+  const application = prefixed.batches.filter(batch => batch.phase === 'application')
   const rows: IndexInjection[] = [{ kind: 'script', placement: 'head', text: queue }]
   for (const batch of application) {
     rows.push({ kind: 'script-preload', src: batch.url })
@@ -519,7 +555,7 @@ window.__ModuleLoader__={
   for (const batch of bootstrap) {
     rows.push({ kind: 'script-src', placement: 'head', src: batch.url })
   }
-  rows.push({ kind: 'global', name: '__DSH_BOOT__', value: graph })
+  rows.push({ kind: 'global', name: '__DSH_BOOT__', value: prefixed })
   return rows
 }
 
@@ -587,7 +623,7 @@ export class ClientModuleRegistry extends Service {
       'client-modules: bundle route',
     )
     ctx.on('webserver/index-inject', (table) => {
-      table.push(...bootInjections(this.composed))
+      table.push(...bootInjections(this.composed, ctx.webServer.basePath))
     })
   }
 

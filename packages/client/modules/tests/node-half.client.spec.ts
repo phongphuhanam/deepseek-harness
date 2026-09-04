@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url'
 import { runInNewContext } from 'node:vm'
 import { Context, type Fiber } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { renderIndexInjections, type WebServer, type WebRoute } from '@deepseek-ai/dsh-host-webserver'
+import { renderIndexInjections, type IndexInjection, type WebServer, type WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import * as modulesClient from '../src/client/index.ts'
 import { ClientModuleRegistry, bootInjections, orderByModuleGraph } from '../src/index.ts'
 import type { ClientModuleLoaderTarget, WebBootEntry, WebBootGraph } from '../src/client/index.ts'
@@ -203,6 +203,32 @@ describe('HTML bootstrap facade', () => {
     graph.batches.push({ phase: 'application', url: secondUrl, rev: 'app-2', entries: [secondId] })
     expect(bootInjections(graph).flatMap(row => row.kind === 'script-preload' ? [row.src] : []))
       .toEqual([APPLICATION_URL, secondUrl])
+  })
+
+  it('prefixes every embedded URL with basePath, for a reverse-proxied deployment', () => {
+    const graph = bootGraph()
+    const rows = bootInjections(graph, '/dsh')
+    // Root-anchored src/href attributes are unaffected by the served
+    // index's <base href> (unlike the dist's own relative assets), so a
+    // reverse-proxied deployment needs the prefix restated here.
+    expect(rows.flatMap(row => row.kind === 'script-src' ? [row.src] : []))
+      .toEqual([`/dsh${BOOTSTRAP_URL}`])
+    expect(rows.flatMap(row => row.kind === 'script-preload' ? [row.src] : []))
+      .toEqual([`/dsh${APPLICATION_URL}`])
+    const globalRow = rows.find((row): row is Extract<IndexInjection, { kind: 'global' }> => row.kind === 'global')
+    const embeddedGraph = globalRow?.value as WebBootGraph
+    expect(embeddedGraph.batches.map(batch => batch.url)).toEqual([`/dsh${BOOTSTRAP_URL}`, `/dsh${APPLICATION_URL}`])
+    expect(embeddedGraph.entries.map(entry => entry.url)).toEqual(graph.entries.map(entry => `/dsh${entry.url}`))
+    // The source graph itself is untouched: the server keeps matching
+    // incoming (already basePath-stripped) requests against unprefixed URLs.
+    expect(graph.batches.map(batch => batch.url)).toEqual([BOOTSTRAP_URL, APPLICATION_URL])
+
+    // Omitting basePath (the default) changes nothing, including identity:
+    // the embedded graph is the exact source object, not a copy.
+    const unprefixed = bootInjections(graph).find(
+      (row): row is Extract<IndexInjection, { kind: 'global' }> => row.kind === 'global',
+    )
+    expect(unprefixed?.value).toBe(graph)
   })
 
   it('rejects a page that did not preload the modules bundle', () => {

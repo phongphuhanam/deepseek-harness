@@ -378,6 +378,9 @@ describe('real Loader composition', () => {
     const loaded = await loadComposition(0, false, '/dsh-web')
     const server = loaded.webServer
     const port = server.port
+    // Public accessor for consumers that must embed an absolute,
+    // browser-facing URL of their own (e.g. client-modules' boot injections).
+    expect(server.basePath).toBe('/dsh-web')
 
     // The prefix is stripped from req.url before the handler runs, so a
     // route registered at the unprefixed path sees a plain '/probe' — every
