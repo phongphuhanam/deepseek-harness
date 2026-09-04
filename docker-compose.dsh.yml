@@ -43,4 +43,15 @@ services:
     # entry matches that hostname on any port, so this works whether nginx
     # answers on 443 or something else. Override on the CLI, e.g.
     # `docker compose -f docker-compose.dsh.yml run --rm dsh web --no-open --port 8080`
-    command: ["web", "--no-open", "--base-path", "/dsh", "--trusted-host", "ubuntu.tailae59.ts.net"]
+    command:
+      - web
+      - --no-open
+      - --base-path
+      - /dsh
+      - --trusted-host
+      - ubuntu.tailae59.ts.net
+      # Prints a "(public: ...)" link alongside the (otherwise unreachable
+      # from anywhere but this machine) loopback one, so it's directly
+      # usable from a phone or any other device.
+      - --public-url
+      - https://ubuntu.tailae59.ts.net/dsh
